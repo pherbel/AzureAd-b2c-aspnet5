@@ -1,0 +1,50 @@
+﻿@using System.Security.Claims
+@using Website.Extensions;
+@*
+    For more information on enabling MVC for empty projects, visit http://go.microsoft.com/fwlink/?LinkID=397860
+*@
+@{
+    Layout = "";
+}
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8" />
+    <title></title>
+
+
+
+</head>
+<body>
+
+    @if (User.Identity.IsAuthenticated)
+    {
+        <ul>
+            <li><a asp-controller="Account" asp-action="Profile">Edit Profile</a></li>
+            <li><a asp-controller="Account" asp-action="SignOut">Sign Out</a></li>
+        </ul>
+
+        <h2>Claims</h2>
+        <ul>
+            <li>Name: @User.GetFullName() </li>
+            <li>Email: @User.GetEmailAddress() </li>
+            <li>UserId: @User.GetUserId() </li>
+
+        </ul>
+        <ul>
+            @foreach (var claim in User.Claims)
+            {
+                <li>ID:@claim.Type Value: @claim.Value</li>
+
+            }
+        </ul>
+    }
+    else
+    {
+        <ul>
+            <li><a asp-controller="Account" asp-action="SignUp"> Sign Up </a></li>
+            <li><a asp-controller="Account" asp-action="SignIn"> Sign In </a></li>
+        </ul>
+    }
+</body>
+</html>

@@ -2,54 +2,49 @@
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
-using Microsoft.AspNet.Builder;
-using Microsoft.Extensions.OptionsModel;
-using Website.Properties;
-using Microsoft.AspNet.Authentication.OpenIdConnect;
-using Microsoft.AspNet.Authentication;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Protocols.OpenIdConnect;
-using System.Globalization;
+using Microsoft.AspNetCore.Authentication.OpenIdConnect;
+using Microsoft.Extensions.DependencyInjection;
+using Website.Services;
 using System.Threading;
-using Website.PolicyAuthHelpers;
+using Microsoft.AspNetCore.Authentication.Cookies;
 
 namespace Website
 {
     public partial class Startup
     {
-        // The ACR claim is used to indicate which policy was executed 
-        public const string AcrClaimType = "http://schemas.microsoft.com/claims/authnclassreference";
-        public const string PolicyKey = "b2cpolicy";
-
-        public void ConfigureAuth(IApplicationBuilder app, IOptions<AzureADSettings> azureADSettings)
+        public void ConfigureAuthentication(IApplicationBuilder app, IOptions<AzureAdSettings> azureADSettings, IServiceProvider serviceProvider)
         {
-            // Configure the OWIN Pipeline to use Cookie Authentication 
-            app.UseCookieAuthentication(options =>
+            app.UseCookieAuthentication(new CookieAuthenticationOptions
             {
-                // By default, all middleware are passive/not automatic. Making cookie middleware automatic so that it acts on all the messages. 
-                options.AutomaticAuthenticate = true;
-
-
+                AutomaticAuthenticate = true
             });
 
-            app.UseOpenIdConnectAuthentication(options =>
+            app.UseOpenIdConnectAuthentication(new OpenIdConnectOptions
             {
-                options.ClientId = azureADSettings.Value.ClientId;
-                options.ResponseType = OpenIdConnectResponseTypes.IdToken;
-                options.Authority = string.Format(CultureInfo.InvariantCulture, azureADSettings.Value.AadInstance, azureADSettings.Value.Tenant,string.Empty,string.Empty);
-                options.Events = new OpenIdConnectEvents {
-                    OnAuthenticationFailed =   OnAuthenticationFailed,
-                    OnRedirectToAuthenticationEndpoint = OnRedirectToAuthenticationEndpoint
-                };
+                AuthenticationScheme = AuthenticationConstants.OpenIdConnectAzureAdB2CAuthenticationScheme,
+                AutomaticChallenge = true,
+                ClientId = azureADSettings.Value.ClientId,
+                Authority = azureADSettings.Value.Authority,
+                ResponseType = OpenIdConnectResponseType.IdToken,
+                PostLogoutRedirectUri = azureADSettings.Value.PostLogoutRedirectUri,
+                Events = new OpenIdConnectEvents
+                {
+                    OnAuthenticationFailed = OnAuthenticationFailed,
+                    //  OnAuthorizationCodeReceived = OnAuthorizationCodeReceived,
+                    OnRedirectToIdentityProvider = OnRedirectToIdentityProvider,
+                    OnRedirectToIdentityProviderForSignOut = OnRedirectToIdentityProviderForSignOut
+                },
 
                 // The PolicyConfigurationManager takes care of getting the correct Azure AD authentication 
-                // endpoints from the OpenID Connect metadata endpoint.  It is included in the PolicyAuthHelpers folder. 
-                options.ConfigurationManager = new PolicyConfigurationManager(
-                    String.Format(CultureInfo.InvariantCulture, azureADSettings.Value.AadInstance, azureADSettings.Value.Tenant, "/v2.0","/" + OpenIdProviderMetadataNames.Discovery),
-                    new string[] { azureADSettings.Value.SignUpPolicyId, azureADSettings.Value.SignInPolicyId, azureADSettings.Value.UserProfilePolicyId});
+                // endpoints from the OpenID Connect metadata endpoint.  It is included in the Authentication folder. 
+                ConfigurationManager = serviceProvider.GetRequiredService<PolicyConfigurationManager>(),
+                SignInScheme = CookieAuthenticationDefaults.AuthenticationScheme
 
             });
         }
-
         private Task OnAuthenticationFailed(AuthenticationFailedContext context)
         {
             context.HandleResponse();
@@ -58,49 +53,41 @@ namespace Website
         }
 
 
-        // This notification can be used to manipulate the OIDC request before it is sent.  Here we use it to send the correct policy. 
-        private async Task OnRedirectToAuthenticationEndpoint(RedirectContext context)
+
+        private async Task OnAuthorizationCodeReceived(AuthorizationCodeReceivedContext context)
         {
-            IOptions<AzureADSettings> azureADSettings = (IOptions<AzureADSettings>)context.HttpContext.ApplicationServices.GetService(typeof(IOptions<AzureADSettings>));
-            PolicyConfigurationManager mgr = context.Options.ConfigurationManager as PolicyConfigurationManager;
-            if (context.ProtocolMessage.RequestType == OpenIdConnectRequestType.LogoutRequest)
-            {
-                if (context.Request.Path.Value.ToLower().Contains("signup"))
-                {
-                    OpenIdConnectConfiguration config = await mgr.GetConfigurationByPolicyAsync(CancellationToken.None, azureADSettings.Value.SignUpPolicyId);
-                    context.ProtocolMessage.IssuerAddress = config.EndSessionEndpoint;
-                }
-                else if (context.Request.Path.Value.ToLower().Contains("signin"))
-                {
-                    OpenIdConnectConfiguration config = await mgr.GetConfigurationByPolicyAsync(CancellationToken.None, azureADSettings.Value.SignInPolicyId);
-                    context.ProtocolMessage.IssuerAddress = config.EndSessionEndpoint;
-                }
-                else if (context.Request.Path.Value.ToLower().Contains("profile"))
-                {
-                    OpenIdConnectConfiguration config = await mgr.GetConfigurationByPolicyAsync(CancellationToken.None, azureADSettings.Value.UserProfilePolicyId);
-                    context.ProtocolMessage.IssuerAddress = config.EndSessionEndpoint;
-                }
-            }
-            else
-            {
-                if (context.Request.Path.Value.ToLower().Contains("signup"))
-                {
-                    OpenIdConnectConfiguration config = await mgr.GetConfigurationByPolicyAsync(CancellationToken.None, azureADSettings.Value.SignUpPolicyId);
-                    context.ProtocolMessage.IssuerAddress = config.AuthorizationEndpoint;
-                }
-                else if (context.Request.Path.Value.ToLower().Contains("signin"))
-                {
-                    OpenIdConnectConfiguration config = await mgr.GetConfigurationByPolicyAsync(CancellationToken.None, azureADSettings.Value.SignInPolicyId);
-                    context.ProtocolMessage.IssuerAddress = config.AuthorizationEndpoint;
-                }
-                else if (context.Request.Path.Value.ToLower().Contains("profile"))
-                {
-                    OpenIdConnectConfiguration config = await mgr.GetConfigurationByPolicyAsync(CancellationToken.None, azureADSettings.Value.UserProfilePolicyId);
-                    context.ProtocolMessage.IssuerAddress = config.AuthorizationEndpoint;
-                }
-            }
+            AzureAdSettings azureADSettings = GetAdSettings(context);
 
 
+            context.HandleCodeRedemption();
+
+        }
+
+        private async Task OnRedirectToIdentityProvider(RedirectContext context)
+        {
+            AzureAdSettings azureADSettings = GetAdSettings(context);
+            var configuration = await GetOpenIdConnectConfigurationAsync(context, azureADSettings.B2CPolicySettings.SignInOrSignUpPolicy);
+            context.ProtocolMessage.IssuerAddress = configuration.AuthorizationEndpoint;
+
+        }
+
+        private async Task OnRedirectToIdentityProviderForSignOut(RedirectContext context)
+        {
+            AzureAdSettings azureADSettings = GetAdSettings(context);
+            var configuration = await GetOpenIdConnectConfigurationAsync(context, azureADSettings.B2CPolicySettings.SignInOrSignUpPolicy);
+            context.ProtocolMessage.IssuerAddress = configuration.EndSessionEndpoint;
+
+        }
+        private AzureAdSettings GetAdSettings(BaseOpenIdConnectContext context)
+        {
+            return context.HttpContext.RequestServices.GetRequiredService<IOptions<AzureAdSettings>>().Value;
+        }
+        private static async Task<OpenIdConnectConfiguration> GetOpenIdConnectConfigurationAsync(RedirectContext context, string defaultPolicy)
+        {
+            var manager = (PolicyConfigurationManager)context.Options.ConfigurationManager;
+            var policy = context.Properties.Items.ContainsKey(AuthenticationConstants.B2CPolicy) ? context.Properties.Items[AuthenticationConstants.B2CPolicy] : defaultPolicy;
+            var configuration = await manager.GetConfigurationByPolicyAsync(CancellationToken.None, policy);
+            return configuration;
         }
 
     }
